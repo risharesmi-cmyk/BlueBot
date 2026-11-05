@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b1020">
+<title>BlueBot LED Controller</title>
+<style>
+  :root{
+    --bg:#0b1020; --card:#151b30; --card2:#1c2440; --text:#e8ecf8; --muted:#8b94b3;
+    --accent:#4c8dff; --on:#ffc83d; --ok:#38d39f; --bad:#ff5c6c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body{padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));
+    max-width:520px;margin:0 auto}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  h1{font-size:20px;margin:0;letter-spacing:.3px}
+  h1 small{display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:2px}
+  .status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);box-shadow:0 0 8px var(--bad)}
+  .dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.demo{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  .row{display:flex;gap:10px}
+  button{font:inherit;color:var(--text);border:0;border-radius:14px;padding:14px 16px;
+    background:var(--card2);font-weight:600;cursor:pointer;transition:transform .08s,background .2s}
+  button:active{transform:scale(.97)}
+  button.primary{background:var(--accent);color:#fff}
+  button.danger{background:#3a1f2b;color:#ff9aa6}
+  button.grow{flex:1}
+  button:disabled{opacity:.45}
+  .banner{background:#2a2410;border:1px solid #5a4a14;color:#ffdc7a;border-radius:12px;
+    padding:10px 12px;font-size:13px;line-height:1.45;margin:12px 0;display:none}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+  .led{background:var(--card);border-radius:18px;padding:16px 14px;display:flex;flex-direction:column;
+    align-items:center;gap:10px;border:1px solid transparent;transition:border-color .2s,background .2s;
+    user-select:none;cursor:pointer}
+  .led.on{border-color:var(--on);background:#241f12}
+  .bulb{width:54px;height:54px;border-radius:50%;background:#2a3252;transition:all .25s;position:relative}
+  .led.on .bulb{background:radial-gradient(circle at 35% 30%,#fff6cf,var(--on) 55%,#e39a00);
+    box-shadow:0 0 28px 6px rgba(255,200,61,.55)}
+  .name{font-weight:700;font-size:15px}
+  .pin{font-size:12px;color:var(--muted)}
+  .toggle{width:52px;height:30px;border-radius:30px;background:#2a3252;position:relative;transition:background .2s}
+  .toggle::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;
+    background:#fff;transition:transform .2s}
+  .led.on .toggle{background:var(--on)}
+  .led.on .toggle::after{transform:translateX(22px)}
+  .section-title{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px}
+  .log{background:var(--card);border-radius:14px;padding:10px 12px;height:120px;overflow:auto;
+    font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--muted)}
+  .log b{color:var(--text)}
+  .hint{font-size:12px;color:var(--muted);line-height:1.5;margin-top:14px}
+  .hint code{background:var(--card);padding:1px 5px;border-radius:5px}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(80px);background:#222a47;
+    padding:10px 16px;border-radius:12px;font-size:13px;opacity:0;transition:all .25s;pointer-events:none;
+    max-width:90vw;text-align:center}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BlueBot<small>Arduino LED Controller</small></h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">Disconnected</span></div>
+</header>
+
+<div class="banner" id="unsupported">
+  Web Bluetooth isn't available in this browser. Open this page in <b>Chrome on Android</b>
+  (iPhone Safari doesn't support it). You can still try <b>Demo mode</b> below.
+</div>
+
+<div class="row">
+  <button class="primary grow" id="connectBtn">Connect Bluetooth</button>
+  <button id="demoBtn">Demo</button>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="row">
+  <button class="grow" id="allOn">All ON (M)</button>
+  <button class="grow danger" id="allOff">All OFF (N)</button>
+</div>
+
+<div class="section-title">Command log</div>
+<div class="log" id="log"></div>
+
+<p class="hint">
+  Sends single characters <code>A</code>–<code>N</code> exactly as your sketch expects.
+  The Arduino doesn't send state back, so the on-screen LED state reflects what this app last sent.
+</p>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const LEDS = [
+    {n:1,pin:11},{n:2,pin:10},{n:3,pin:9},
+    {n:4,pin:8}, {n:5,pin:7}, {n:6,pin:6}
+  ];
+  // LED i -> ON = 'A'+2i, OFF = 'A'+2i+1
+  const onCmd  = i => String.fromCharCode(65 + i*2);
+  const offCmd = i => String.fromCharCode(66 + i*2);
+
+  const $ = id => document.getElementById(id);
+  const state = LEDS.map(() => false);
+  let device = null, characteristic = null, demo = false;
+  let queue = Promise.resolve();
+
+  // ---------- UI ----------
+  const grid = $('grid');
+  LEDS.forEach((l, i) => {
+    const el = document.createElement('div');
+    el.className = 'led';
+    el.id = 'led' + i;
+    el.innerHTML = `<div class="bulb"></div><div class="name">LED ${l.n}</div>
+      <div class="pin">Pin ${l.pin}</div><div class="toggle"></div>`;
+    el.addEventListener('click', () => setLed(i, !state[i]));
+    grid.appendChild(el);
+  });
+
+  function render() {
+    state.forEach((s, i) => $('led' + i).classList.toggle('on', s));
+  }
+  function log(msg) {
+    const d = document.createElement('div');
+    const t = new Date().toLocaleTimeString([], {hour12:false});
+    d.innerHTML = `${t} ${msg}`;
+    $('log').appendChild(d);
+    $('log').scrollTop = 1e6;
+  }
+  let toastT;
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+  function setStatus(text, mode) {
+    $('statusText').textContent = text;
+    $('dot').className = 'dot' + (mode ? ' ' + mode : '');
+  }
+
+  // ---------- Bluetooth (BLE UART modules like HM-10 / AT-09 / nRF UART) ----------
+  const SERVICES = [
+    0xFFE0,                                   // HM-10 / AT-09 / CC41
+    '6e400001-b5a3-f393-e0a9-e50e24dcca9e',   // Nordic UART
+    '0000dfb0-0000-1000-8000-00805f9b34fb',   // DFRobot Bluno
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455',   // ISSC transparent UART
+    0xFFF0
+  ];
+
+  async function connect() {
+    if (!navigator.bluetooth) { $('unsupported').style.display = 'block'; return; }
+    try {
+      setStatus('Scanning…');
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: SERVICES
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      setStatus('Connecting…');
+      const server = await device.gatt.connect();
+      characteristic = await findWritable(server);
+      if (!characteristic) throw new Error('No writable UART characteristic found on this device');
+      demo = false;
+      setStatus(device.name || 'Connected', 'ok');
+      $('connectBtn').textContent = 'Disconnect';
+      log(`<b>Connected</b> to ${device.name || 'device'}`);
+      toast('Connected');
+    } catch (e) {
+      if (e && e.name === 'NotFoundError') { setStatus('Disconnected'); return; } // user cancelled
+      console.error(e);
+      setStatus('Disconnected');
+      log(`<b>Error:</b> ${e.message}`);
+      toast(e.message);
+      try { device && device.gatt.connected && device.gatt.disconnect(); } catch(_){}
+    }
+  }
+
+  async function findWritable(server) {
+    const services = await server.getPrimaryServices();
+    for (const s of services) {
+      let chars = [];
+      try { chars = await s.getCharacteristics(); } catch(_) { continue; }
+      for (const c of chars) {
+        if (c.properties.writeWithoutResponse || c.properties.write) return c;
+      }
+    }
+    return null;
+  }
+
+  function onDisconnected() {
+    characteristic = null;
+    setStatus('Disconnected');
+    $('connectBtn').textContent = 'Connect Bluetooth';
+    log('<b>Disconnected</b>');
+    toast('Bluetooth disconnected');
+  }
+
+  async function disconnect() {
+    if (device && device.gatt.connected) device.gatt.disconnect();
+    else onDisconnected();
+  }
+
+  function send(ch) {
+    if (demo) { log(`Demo → <b>${ch}</b>`); return Promise.resolve(true); }
+    if (!characteristic) { toast('Not connected'); return Promise.resolve(false); }
+    const data = new TextEncoder().encode(ch);
+    queue = queue.then(async () => {
+      try {
+        if (characteristic.properties.writeWithoutResponse && characteristic.writeValueWithoutResponse)
+          await characteristic.writeValueWithoutResponse(data);
+        else
+          await characteristic.writeValue(data);
+        log(`Sent → <b>${ch}</b>`);
+        return true;
+      } catch (e) {
+        log(`<b>Send failed:</b> ${e.message}`);
+        toast('Send failed');
+        return false;
+      }
+    });
+    return queue;
+  }
+
+  // ---------- Actions ----------
+  async function setLed(i, on) {
+    if (!demo && !characteristic) { toast('Connect Bluetooth first (or use Demo)'); return; }
+    const ok = await send(on ? onCmd(i) : offCmd(i));
+    if (ok) { state[i] = on; render(); if (navigator.vibrate) navigator.vibrate(15); }
+  }
+  async function setAll(on) {
+    if (!demo && !characteristic) { toast('Connect Bluetooth first (or use Demo)'); return; }
+    const ok = await send(on ? 'M' : 'N');
+    if (ok) { state.fill(on); render(); if (navigator.vibrate) navigator.vibrate(25); }
+  }
+
+  $('connectBtn').addEventListener('click', () => {
+    if (characteristic || (device && device.gatt.connected)) disconnect(); else connect();
+  });
+  $('demoBtn').addEventListener('click', () => {
+    if (characteristic) { toast('Disconnect Bluetooth first'); return; }
+    demo = !demo;
+    $('demoBtn').textContent = demo ? 'Exit demo' : 'Demo';
+    setStatus(demo ? 'Demo mode' : 'Disconnected', demo ? 'demo' : '');
+    log(demo ? '<b>Demo mode</b> on (nothing is sent)' : 'Demo mode off');
+  });
+  $('allOn').addEventListener('click', () => setAll(true));
+  $('allOff').addEventListener('click', () => setAll(false));
+
+  if (!navigator.bluetooth) $('unsupported').style.display = 'block';
+  render();
+  log('Ready. Tap <b>Connect Bluetooth</b>.');
+})();
+</script>
+</body>
+</html>
